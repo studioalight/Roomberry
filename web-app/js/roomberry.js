@@ -12,8 +12,8 @@
 	const CELSIUS = " °C";		
 	const RATELIMIT = 300;	
 	const N_HEIGHT = N_WIDTH = 160;
-	const TRANSMAX = 300;
-	const ROTMAX = 200;
+	const TRANSMAX = 50;
+	const ROTMAX = 50;
 	const OI_PASSIVE = 1;
 	const OI_SAFE = 2;
 	const OI_FULL = 3;
@@ -706,6 +706,8 @@
 					document.getElementById(roombaParameters[i].name).value = roombaParameters[i].value + " " + roombaParameters[i].unit;
 					break;
 				case "select-one":
+                                        if (roombaParameters[i].name == "oi_mode")
+						roombaParameters[i].value -= 1
 					if (document.getElementById(roombaParameters[i].name).value != roombaParameters[i].value)
 					{
 						document.getElementById(roombaParameters[i].name).value = roombaParameters[i].value;
