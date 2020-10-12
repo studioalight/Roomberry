@@ -1,10 +1,11 @@
 __author__ = 'Daniel Macías Perea (dani.macias.perea@gmail.com'
-
+import socket
 import picamera
 import xml.etree.ElementTree as ET
 import requests
 import logging
 import traceback
+import paho.mqtt.client as mqtt
 from fractions import Fraction
 from ast import literal_eval
 from socketserver import ThreadingMixIn
@@ -25,13 +26,13 @@ SNAP_QUALITY = 60
 CAPTURE_QUALITY = 80
 CAM_FRAMERATE = 30
 CAM_ROTATION = 0
-BATTERY_WATCHDOG_SLEEP_TIME = 600
+BATTERY_WATCHDOG_SLEEP_TIME = 60
 IFTTT_KEY = ''
 BATTERY_CRITICAL_LEVEL = 0.1
-BATTERY_LOW_LEVEL = 0.3
-PORT_NUMBER = 80
-PORT_SERIAL = '/dev/serial0'
-BRC_GPIO = 27
+BATTERY_LOW_LEVEL = 0.2
+PORT_NUMBER = 8080
+PORT_SERIAL = '/dev/ttyUSB0'
+BRC_GPIO = 0 
 LOCK_TIMEOUT = 15
 ANNOTATE_TEXT_SIZE = 30
 ANNOTATE_TEXT = 'Roomberry %d-%m-%Y %H:%M:%S'
@@ -65,6 +66,7 @@ ROOMBA_XML_TAGS = [('bumps_and_wheel_drops','bump_left'), ('bumps_and_wheel_drop
     ('light_bump_center_right_signal'), ('light_bump_front_right_signal'), ('light_bump_right_signal'), ('left_motor_current'), ('right_motor_current'), \
     ('main_brush_motor_current'), ('side_brush_motor_current'), ('stasis', 'toggling'), ('stasis', 'disabled')]
     
+BROKER = 'broker.hivemq.com'
 #This class represents the web server and makes camera and roomba
 #available to incoming HTTP requests   
 class RoomberryServer(ThreadingMixIn, HTTPServer):
@@ -75,15 +77,19 @@ class RoomberryServer(ThreadingMixIn, HTTPServer):
         
         #Initialize camera
         self.camera_lock = Lock()        
-        self.start_camera()
+#        self.start_camera()
         self.last_camera_operation = time()
         
         #Wake up an initialize roomba
-        self.roomba = Create2(serial_port, brc_pin, enable_quirks=False)
-        self.roomba.logger.disabled = True
+        self.roomba = Create2(serial_port, self.logger, brc_pin, enable_quirks=False)
+        self.roomba.logger.disabled = False
+#        boot_message = self.roomba.firmware_version.split('\r\n')
         self.roomba_lock = Lock()
         self.distance = 0
         self.angle = 0
+
+        self.client =mqtt.Client(socket.gethostname())
+
         
         #Start watchdog thread
         self.battery_watchdog_thread = Thread(target = self.battery_watchdog)
@@ -92,12 +98,13 @@ class RoomberryServer(ThreadingMixIn, HTTPServer):
     def start(self):
         self.logger.info('Rooomberry Server correctly started.')
         self.battery_watchdog_thread.start()
+        self.client.connect(BROKER)
         self.serve_forever()
         
     def stop(self):
         self.logger.info('Rooomberry Server correctly stopped.')  
         self.server_close()
-        
+        self.client.disconnect()
         if self.roomba_lock.locked():
             self.roomba_lock.release()
         self.roomba.stop()
@@ -121,9 +128,11 @@ class RoomberryServer(ThreadingMixIn, HTTPServer):
                 home_base = self.roomba.charging_sources.home_base
                 self.roomba_lock.release()
                 battery_level = (battery_charge / battery_capacity)
-                
-                if (time() - self.last_camera_operation) >= BATTERY_WATCHDOG_SLEEP_TIME - 15 and not self.camera.closed:
-                    self.camera.close()
+                self.logger.info('Battery level: ' + str(battery_level) + '\n')
+                self.client.publish("poover/battery",str(battery_level))
+
+                if (time() - self.last_camera_operation) >= BATTERY_WATCHDOG_SLEEP_TIME - 15: # and not self.camera.closed:
+#                    self.camera.close()
                     self.logger.info('Closing camera due to inactivity.')
                 
                 if battery_level < BATTERY_CRITICAL_LEVEL and not home_base:
@@ -197,7 +206,7 @@ class RoomberryHandler(BaseHTTPRequestHandler):
         if (self.server.camera_lock.acquire(timeout=LOCK_TIMEOUT)):
             if self.server.camera.closed:                            
                 self.logger.info('Waking up camera.')
-                self.server.start_camera()
+#                self.server.start_camera()
             self.server.camera_lock.release() 
         
         #Update sensor information from the cam         
@@ -272,13 +281,14 @@ class RoomberryHandler(BaseHTTPRequestHandler):
            remove(PATH_TO_WWW + PATH_TO_MEDIA_XML)
         
         media_dictionary = {}
-        for dirpath, dirs, files in walk(PATH_TO_MEDIA + '/' + PATH_TO_CAM):            
+        for dirpath, dirs, files in walk(PATH_TO_MEDIA):            
             if files:
                 media_dictionary[dirpath] = sorted(files, reverse=True) 
         
         root = ET.Element("files")
 
-        for k, v in sorted(media_dictionary.items(), key=lambda item: (item[1], item[0]), reverse=True):
+        for k, v in sorted(list(media_dictionary.items()), key=lambda item: (item[1], item[0]), reverse=True):
+        #for k, v in sorted(media_dictionary.items(), key=lambda item: (item[1], item[0]), reverse=True):
             aux = ET.SubElement(root, "folder", day = k.split('/')[-1])
             for file in v: 
                 if file.endswith('.jpg'):
@@ -292,15 +302,15 @@ class RoomberryHandler(BaseHTTPRequestHandler):
     def update_cam_snap(self):
     
         #Check if the camera is closed due to inactivity
-        if (self.server.camera_lock.acquire(timeout=LOCK_TIMEOUT)):
-            if self.server.camera.closed:                            
+#        if (self.server.camera_lock.acquire(timeout=LOCK_TIMEOUT)):
+#            if self.server.camera.closed:                            
                 self.logger.info('Waking up camera.')
-                self.server.start_camera()
+#                self.server.start_camera()
             
             #Get the snap
-            self.server.camera.annotate_text = strftime(self.server.annotate_text, localtime(time()))
-            self.server.camera.capture(PATH_TO_WWW + PATH_TO_SNAP, resize = tuple((self.server.snap_resolution_width, self.server.snap_resolution_height)), quality = self.server.capture_quality)
-            self.server.camera_lock.release() 
+#            self.server.camera.annotate_text = strftime(self.server.annotate_text, localtime(time()))
+#            self.server.camera.capture(PATH_TO_WWW + PATH_TO_SNAP, resize = tuple((self.server.snap_resolution_width, self.server.snap_resolution_height)), quality = self.server.capture_quality)
+#            self.server.camera_lock.release() 
 
     def cam_record(self, duration):
     
@@ -308,15 +318,15 @@ class RoomberryHandler(BaseHTTPRequestHandler):
         if (self.server.camera_lock.acquire(timeout=LOCK_TIMEOUT)):
             if self.server.camera.closed:                            
                 self.logger.info('Waking up camera.')
-                self.server.start_camera()
+#                self.server.start_camera()
             self.server.camera_lock.release() 
     
         # Do not use lock, allow capture and record concurrently
         year, month, day, hour, minute, second = strftime("%Y,%m,%d,%H,%M,%S", localtime(time())).split(',')
         self._create_day_folder(year, month, day)
-        self.server.camera.start_recording(PATH_TO_MEDIA + '/' + PATH_TO_CAM + '/' + year + month + day + '/' + year + month + day + '-' + hour + minute + second + '.h264', format = 'h264', quality = round(40-self.server.capture_quality/100.0*30))
-        self.server.camera.wait_recording(int(duration))
-        self.server.camera.stop_recording()
+#        self.server.camera.start_recording(PATH_TO_MEDIA + '/' + PATH_TO_CAM + '/' + year + month + day + '/' + year + month + day + '-' + hour + minute + second + '.h264', format = 'h264', quality = round(40-self.server.capture_quality/100.0*30))
+#        self.server.camera.wait_recording(int(duration))
+#        self.server.camera.stop_recording()
 
     def cam_capture(self):
     
@@ -324,14 +334,14 @@ class RoomberryHandler(BaseHTTPRequestHandler):
         if (self.server.camera_lock.acquire(timeout=LOCK_TIMEOUT)):
             if self.server.camera.closed:                            
                 self.logger.info('Waking up camera.')
-                self.server.start_camera() 
+#                self.server.start_camera() 
             
             # Get the capture
             year, month, day, hour, minute, second = strftime("%Y,%m,%d,%H,%M,%S", localtime(time())).split(',')
             self._create_day_folder(year, month, day)
-            self.server.camera.annotate_text = strftime(self.server.annotate_text, localtime(time()))
-            self.server.camera.capture(PATH_TO_MEDIA + '/' + PATH_TO_CAM + '/' + year + month + day  + '/' + year + month + day + '-' + hour + minute + second + '.jpg', quality = self.server.snap_quality)
-            self.server.camera_lock.release()    
+#            self.server.camera.annotate_text = strftime(self.server.annotate_text, localtime(time()))
+#            self.server.camera.capture(PATH_TO_MEDIA + '/' + PATH_TO_CAM + '/' + year + month + day  + '/' + year + month + day + '-' + hour + minute + second + '.jpg', quality = self.server.snap_quality)
+#            self.server.camera_lock.release()    
 
     def send_reply(self, basePath=PATH_TO_WWW, mimetype=None):          
         self.send_response(200)
@@ -366,8 +376,9 @@ class RoomberryHandler(BaseHTTPRequestHandler):
                     self.get_media_xml()             
                     self.send_reply(mimetype='text/xml')                    
                 elif self.path == PATH_TO_SNAP:
-                    self.update_cam_snap()
-                    self.send_reply(mimetype='image/jpg')
+                     self.logger.info('Snap camera.')
+#                    self.update_cam_snap()
+#                    self.send_reply(mimetype='image/jpg')
                 elif self.path.endswith('.jpg'):
                     self.send_reply(PATH_TO_MEDIA,'image/jpg')
                 elif self.path.endswith('.h264'):
@@ -379,7 +390,8 @@ class RoomberryHandler(BaseHTTPRequestHandler):
                     operation = dict_qs['op'][0]
 
                     #Convert the values of the query string, removing key 'op'
-                    dict_qs = dict([key, value[0]] for key, value in dict_qs.items() if key!='op')
+                    dict_qs = dict([key, value[0]] for key, value in list(dict_qs.items()) if key!='op')
+                    #dict_qs = dict([key, value[0]] for key, value in dict_qs.items() if key!='op')
 
                     #Set operation in the camera
                     if operation == 'cam':                   
@@ -427,7 +439,7 @@ class RoomberryHandler(BaseHTTPRequestHandler):
                     
                     #Get the operation to be executed and convert the values of the query string, removing key 'op'
                     operation = dict_qs['op'][0]
-                    dict_qs = dict([key, self._dictionary_Parser(key,value[0])] for key, value in dict_qs.items() if key!='op')
+                    dict_qs = dict([key, self._dictionary_Parser(key,value[0])] for key, value in list(dict_qs.items()) if key!='op')
                     
                     if operation == 'reset_roomba_distance_angle':
                         self.reset_roomba_distance_angle()
