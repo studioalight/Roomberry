@@ -1,4 +1,8 @@
 __author__ = 'Daniel Macías Perea (dani.macias.perea@gmail.com'
+from xml.dom import minidom
+import xmltodict
+import pprint
+import json
 import socket
 import picamera
 import xml.etree.ElementTree as ET
@@ -88,7 +92,7 @@ class RoomberryServer(ThreadingMixIn, HTTPServer):
         self.distance = 0
         self.angle = 0
 
-        self.client =mqtt.Client(socket.gethostname())
+        self.roomba.client =mqtt.Client(socket.gethostname())
 
         
         #Start watchdog thread
@@ -98,13 +102,13 @@ class RoomberryServer(ThreadingMixIn, HTTPServer):
     def start(self):
         self.logger.info('Rooomberry Server correctly started.')
         self.battery_watchdog_thread.start()
-        self.client.connect(BROKER)
+        self.roomba.client.connect(BROKER)
         self.serve_forever()
         
     def stop(self):
         self.logger.info('Rooomberry Server correctly stopped.')  
         self.server_close()
-        self.client.disconnect()
+        self.roomba.client.disconnect()
         if self.roomba_lock.locked():
             self.roomba_lock.release()
         self.roomba.stop()
@@ -129,7 +133,7 @@ class RoomberryServer(ThreadingMixIn, HTTPServer):
                 self.roomba_lock.release()
                 battery_level = (battery_charge / battery_capacity)
                 self.logger.info('Battery level: ' + str(battery_level) + '\n')
-                self.client.publish("poover/battery",str(battery_level))
+                self.roomba.client.publish("poover/battery",str(battery_level))
 
                 if (time() - self.last_camera_operation) >= BATTERY_WATCHDOG_SLEEP_TIME - 15: # and not self.camera.closed:
 #                    self.camera.close()
@@ -253,7 +257,7 @@ class RoomberryHandler(BaseHTTPRequestHandler):
         if self.server.roomba_lock.acquire(timeout=LOCK_TIMEOUT):
             sensor_group100 = self.server.roomba.sensor_group100
             self.server.roomba_lock.release()
-        
+
         bumps_and_wheel_drops = sensor_group100.bumps_and_wheel_drops
         light_bumper = sensor_group100.light_bumper      
         
@@ -269,6 +273,8 @@ class RoomberryHandler(BaseHTTPRequestHandler):
                 root[i].text = str(getattr(getattr(sensor_group100, ROOMBA_XML_TAGS[i][0]), ROOMBA_XML_TAGS[i][1])) 
             else:
                 root[i].text = str(getattr(sensor_group100, ROOMBA_XML_TAGS[i]))                               
+        xmlstr = ET.tostring(root)
+        self.server.roomba.client.publish("poover/sensor_group100",json.dumps(xmltodict.parse(xmlstr)))
         tree.write(PATH_TO_WWW + PATH_TO_ROOMBA_XML)        
         return
 
