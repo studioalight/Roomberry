@@ -32,8 +32,10 @@ CAM_FRAMERATE = 30
 CAM_ROTATION = 0
 BATTERY_WATCHDOG_SLEEP_TIME = 60
 IFTTT_KEY = ''
+AUTONOMOUS_CHARGING = False
 BATTERY_CRITICAL_LEVEL = 0.1
 BATTERY_LOW_LEVEL = 0.2
+BATTERY_FULL_LEVEL = 0.95
 PORT_NUMBER = 8080
 PORT_SERIAL = '/dev/ttyUSB0'
 BRC_GPIO = 0 
@@ -148,12 +150,25 @@ class RoomberryServer(ThreadingMixIn, HTTPServer):
                     requests.post("https://maker.ifttt.com/trigger/roomberry_battery_critical/with/key/" + IFTTT_KEY, data={"value1" :  str(round(float(battery_level * 100),1)) + "%"})
                     call("sudo shutdown -h now", shell=True) 
                      
-                elif battery_level < BATTERY_LOW_LEVEL and not home_base:
+                elif battery_level < BATTERY_LOW_LEVEL and not home_base and AUTONOMOUS_CHARGING:
                     self.logger.info('Battery reached warning level. Searching dock station.')
                     self.roomba_lock.acquire(timeout=LOCK_TIMEOUT)
                     self.roomba.seek_dock()    
                     self.roomba_lock.release()  
                     requests.post("https://maker.ifttt.com/trigger/roomberry_battery_low/with/key/" + IFTTT_KEY, data={"value1" :  str(round(float(battery_level * 100),1)) + "%"})
+
+                elif battery_level > BATTERY_FULL_LEVEL and home_base and AUTONOMOUS_CHARGING:
+                    self.logger.info('Battery reached full level. Leaving dock station.')
+                    self.roomba_lock.acquire(timeout=LOCK_TIMEOUT)
+
+                    self.roomba.clean()
+
+                    self.roomba._change_mode(2)
+                    self.roomba.drive_straight(-15)
+                    sleep(4)
+                    self.roomba.drive_straight(0)
+                    self.roomba_lock.release()
+
             
             except Exception as e:
                 self.logger.error('error: Battery Watchdog failed: ' + str(e) + '\n' +traceback.format_exc())
